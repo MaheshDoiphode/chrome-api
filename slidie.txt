@@ -1,0 +1,182 @@
+Presentation Script — Mahesh
+"I didn't know what I didn't know."
+
+
+SLIDE 1 — "I didn't know what I didn't know."
+(walk up, let the slide sit for 2-3 seconds, look at the audience, then start)
+So.. hi everyone.
+I know everyone here is way more experienced than me — Java, Docker, Kubernetes, whatever.. you all have seen it all. And honestly when I was told I have to give this tech talk, my first thought was.. what am I even going to add here? Like, what value can I give to people who already know everything I know, and more?
+But then I thought about something. You all have been doing this for years. You've automated the hard parts, you've built muscle memory for things that once confused you. You probably don't even remember what it felt like to start from zero and try to figure everything out on your own.
+So I'm not here to teach you Java. I'm not here to tell you how Kubernetes works. You know that better than me.
+What I want to tell you is — what it actually felt like to take something from my laptop, all the way to production, maintain it, and survive it. Every single decision I had to make from scratch, with no one telling me what to choose.
+And that sentence on the screen — "I didn't know what I didn't know" — that was literally my life for the first few months. I didn't even know what questions to ask. I didn't know Docker was a thing I needed to think about. I didn't know what SSE was. I didn't know what blue-green deployment meant. I didn't know GoDaddy had a renewal pricing trap.
+I just kept building, kept hitting walls, kept researching, kept figuring it out.
+So that's what this talk is. The walls I hit, the decisions I made, and honestly — a few things I got wrong too.
+(pause, click to next slide)
+
+
+SLIDE 2 — "Where I Ended Up"
+So before I get into all the chaos of how decisions were made — let me show you where I actually ended up.
+(gesture at the diagram)
+This is my full architecture. And I want you to look at every single box on this diagram, because every single one of them was a decision I had to consciously make. It wasn't like someone handed me a template and said "use this." Every box — Cloudflare, DigitalOcean, Nginx, Blue/Green, Datadog, Postgres, DO Spaces, Cloudflare Pages — I had to figure out what it was, why I needed it, what the alternatives were, and why I should pick that one over others.
+Let me just quickly walk you through what the flow looks like —
+When a user makes a request, it first hits Cloudflare. Cloudflare is sitting in front of everything. It handles DDoS protection, rate limiting, SSL to the browser — all of that happens at Cloudflare's layer before the request even reaches my server.
+Then it hits my DigitalOcean Firewall — which is basically a set of rules saying which IPs are even allowed to enter my VM. We'll talk about why this matters in a second.
+Then comes Nginx — which is sitting inside the VM, acting as a reverse proxy, routing requests to my actual Node backend.
+And then we have the Blue/Green setup — which is basically two instances of my backend running. One is live, one is on standby. When I push new code, I deploy to standby, health check it, and then switch Nginx to point to it. Zero downtime.
+And then the supporting services — Datadog for logs and monitoring, Postgres as my database managed by DigitalOcean, DO Spaces which is basically like S3 — I use it to store my Tauri app builds so users can download and update, and Cloudflare Pages where my website is hosted.
+This is where I ended up. But how I ended up here — that's the story.
+(pause, click to next slide)
+
+
+SLIDE 3 — "What Research Revealed" (COMPLETE)
+So let me take you through each of these decisions.. and honestly how chaotic the process was..
+
+Electron → Tauri
+So I need to build a desktop application. It needs to interact with system level things. First thing I found was WPF — apparently it has the best compatibility with OS-level stuff. But it was Windows only. Obfuscation was bad. UI/UX support was old. Dropped.
+Then I found Electron and Tauri.
+Electron — huge ecosystem, great support, lots of developers using it. Tauri — newer, still had issues, smaller community. The obvious choice was Electron, right?
+But then I saw the memory footprint. Electron ships an entire Chromium browser inside your app. That's why Slack, VS Code, all of them — they're so heavy. And I didn't want that.
+Tauri uses Rust. Rust is known for being the most CPU efficient thing out there. App size is tiny. But — and this is the thing that kept me up — Tauri needs WebKit from the user's computer to run. So if the user has a missing WebKit, or an older version, my app just breaks on their machine. And they'll come to me saying "your app doesn't work" and I'll have to manually figure out what version of WebKit they have and solve it one by one. As a solo developer — that's a nightmare.
+So I was genuinely stuck. Electron means heavy app. Tauri means potential production issues I can't predict.
+And then I kept digging into Tauri's problem specifically — and found out that you can actually ship the WebKit with the Tauri app itself. You don't have to depend on the user's machine. Problem solved. Tauri it was.
+
+Spring Boot → Fastify
+Okay so for the backend — I have Java Spring Boot experience. Obvious choice, right? Just go with what you know.
+But my application needs to handle SSE streams — Server-Sent Events. It's how AI responses stream back to the user in real time. And I learned that Java doesn't handle SSE that well. It can do it, but it's not built for it.
+So I moved to Node. But even there — Express, which everyone uses, wasn't great for SSE either. Then I found Fastify, which is specifically known for performance and SSE handling. So Fastify.
+But here's the thing — I knew this wasn't forever. Fastify will have its limits at scale. Java will come back into the picture eventually. So when I was designing the folder structure, I made it very carefully modular. Every major feature is its own isolated piece. So when that day comes — I don't rewrite everything. I just take those pieces out of Node and move them into Java. Just extend, not replace.
+
+So now I have a Tauri desktop app, and a Fastify backend. The app is built. But the backend is sitting on my laptop. I need to deploy it somewhere. And that means I need to figure out — do I containerize it first, or just put it directly on a server?
+
+Docker → Bare VM
+I know Docker. I've worked with it. I know it solves the "works on my machine" problem — and that problem is real.
+But I stopped and asked — do I actually need Docker right now?
+My VM is 2GB RAM, 1 CPU. My app is simple, doesn't have huge dependencies. And Docker itself eats memory. So I'd be running Docker, and on top of that running Node inside it — on a 2GB machine. For the number of users I had initially, I'd actually be able to serve way more users on a plain VM than with Docker on the same hardware.
+So I made a conscious call — no Docker for now. When I scale, I'll add it then. Right now it's just unnecessary overhead.
+
+Bare VM it was. But now I need actual cloud infrastructure to run this VM on. And that means choosing a cloud provider — which sounds simple until you actually start comparing them.
+
+AWS → DigitalOcean
+I went through everything. AWS, GCP, Azure, DigitalOcean, Heroku. Compared pricing, services, everything.
+AWS is powerful, everyone knows that. But the problem is — AWS charges you for everything. Every inbound request, every outbound request, there are so many small things that stack up. And before you know it, your bill is 3x what you expected. The pricing is unpredictable.
+DigitalOcean is flat. You know exactly what you're paying. No surprises.
+And the third thing — I'm a student. DigitalOcean gives $200 in student credits. I got a student ID, applied, and ran my servers for free for 3 months while I focused on getting users. Because until your product is out there, you can't acquire customers. Those 3 months were really important.
+
+DigitalOcean it was. Server is up, backend is running, VM is live. But now it's sitting there with a raw public IP address. I don't want to expose that IP directly to users. That's a security risk. So I need a domain. Which means — domain provider comparison time.
+
+GoDaddy → Cloudflare
+I looked at Namecheap, GoDaddy, Cloudflare, a few others.
+GoDaddy was showing the cheapest price. But I got curious — why is it so cheap? I started digging. And I found out that GoDaddy lures you in with a low price for the first year, sometimes first two years. And then when you renew — price shoots up. Hidden charges. Little scary.
+Then I looked at Cloudflare's policy. Simple — the price you see today is the price you pay forever on renewal. The only exception is if the top-level domain registry itself increases prices, which is rare.
+So yes, Cloudflare was more expensive initially. But that small bit of research saved me money every single year going forward.
+
+Domain sorted. But now I need to connect that domain to my VM properly — and make sure only legitimate traffic gets through. Which opened up a whole other rabbit hole of SSL certificates, firewalls, and how Cloudflare actually talks to my server securely.
+
+Securing the connection — Cloudflare to VM
+So now Cloudflare is sitting in between the user and my VM. But there are two problems I need to solve.
+First — I need to make sure all traffic from Cloudflare to my VM is encrypted. Never over plain HTTP. For this I get an SSL/TLS origin certificate from Cloudflare and add it to the VM. So every request coming from Cloudflare hits my VM over HTTPS. Encrypted end to end.
+Second — even with a domain in between, if someone is smart enough, they can extract my VM's actual IP address. And then they can bypass Cloudflare completely and hit my server directly. I don't want that.
+So I need to make sure my VM only accepts requests that are actually coming from Cloudflare.
+Two options here. Option one — deny all traffic, and only allow Cloudflare's IPs. Cloudflare publicly broadcasts their IP ranges, so I can whitelist only those. Sounds perfect right?
+But then I thought — if I deny all traffic, I can't SSH into my own VM. My IP at home is dynamic, it changes. And GitHub Actions — which is what I use for deployments — its IP also changes every run. So I can't whitelist those either. I could set up a VPN through GitHub to the VM, but that's a whole other headache. And in the early stages especially, I want to be able to just SSH in and manually poke around when something breaks.
+So option one is out. I need another approach.
+Option two — allow all IPs to enter the VM, but only open specific ports.
+Port 443 and 80 — for Nginx, which is sitting in front of my Node app.
+Port 22 — for SSH.
+That's it. Everything else is closed.
+But now — anyone can hit port 443. So how do I make sure only Cloudflare requests actually get through to my Node app?
+This is where Cloudflare's Authenticated Origin Pulls comes in. The way it works — every single request Cloudflare sends to my VM, it attaches its own client certificate to that request. Nginx on my VM is configured to verify that certificate. If the request doesn't have that Cloudflare client certificate — Nginx rejects it. Doesn't matter if the IP matches, doesn't matter what port it came through — no cert, no entry.
+So now my app is only reachable through Cloudflare. No direct access possible.
+
+Securing SSH
+Now the SSH port is open — port 22. Anyone can try to connect. So I need to make sure only I and GitHub Actions can actually get in.
+For this I create two SSH key pairs. Key A — for me. Key B — for GitHub Actions.
+Key A — the public key goes to the VM. So whenever I try to SSH in from my laptop, my private key is matched against the public key on the VM. If it matches — access granted.
+Key B — same thing, public key goes to the VM. But the private key goes into GitHub repository secrets, so GitHub Actions can SSH into the VM during deployments.
+Now — someone might think — okay but if someone gets hold of my laptop and finds my private key, they can just SSH straight into the VM. Sort of yes. That's where passphrases come in. While generating the SSH key, I can add a passphrase to it. So even if someone has my private key file, they still need to enter the passphrase to use it. I added a passphrase to my personal key.
+But GitHub Actions can't enter a passphrase interactively. So Key B has no passphrase. Isn't that a security risk though? I mean, anyone could open my GitHub and read the secret right?
+Actually no — once a secret is saved in GitHub repository secrets, not even admins can read it back. It's write-only. So that private key is safe there.
+For now I went with this setup because I need the flexibility to SSH in manually from my laptop whenever I want. Eventually I'll move to something more restricted. But for where I am right now — this is the right balance.
+
+Blue-Green deployment and Nginx
+Okay so the VM is secured. Now how do I actually deploy new code without any downtime?
+This is where the Blue-Green setup comes in. I run two instances of my Node backend. Blue on port 3001, Green on port 3002. At any point, one of them is live and the other is on standby.
+Nginx sits in front of both. It's configured to point to whichever one is currently active.
+When I push new code — GitHub Actions SSHes into the VM, deploys the new code to the standby instance, restarts it. Then — and this part is important — it runs a health check. It keeps pinging the health endpoint of that standby instance every 2 seconds until it responds with a 200. Only after it's confirmed healthy does it flip the Nginx config to point to the new instance. Then it does an nginx -s reload.
+The reload itself is graceful — old Nginx workers finish handling whatever requests they're currently processing, and new workers take over. So no requests are dropped.
+But there's a nuance — and this is something I had to think about specifically because of my app. For regular HTTP requests, the graceful reload is completely fine. But for SSE connections — which my app uses heavily — those are long-lived connections. If an old Nginx worker times out before the SSE connection closes naturally, that connection drops. So I had to make sure the client handles reconnection properly on its side.
+And if something goes wrong during deployment — if the health check fails, if the new instance never comes up properly — GitHub Actions automatically rolls back. It flips Nginx back to the previous instance. So even if a deployment breaks, users never see it.
+
+Okay so the backend is secured, domain is connected, deployment is handled, everything is talking to each other properly. But now I need a website. Because a desktop app with no landing page, no pricing page, no docs — nobody's going to trust it. So back to choosing a tech stack.
+
+React → Next.js
+React, Angular, or Vue.
+Vue — too simple, less mature ecosystem. Dropped. Angular — very nice modular component support, but very heavy. Not worth it for a website that will have limited pages and is basically just showcasing features and handling payments. React — sits in the middle, most mature ecosystem, loads of libraries. Went with React.
+Site was ready. I had a domain on Cloudflare. Cloudflare actually provides free hosting for static sites through their Pages service. I connected my GitHub repo, configured the build command, set the target branch for production deployments and preview deployments — and it was live.
+But now I needed to define — what requests go to the website, and what requests go to my backend? For this I define DNS records in Cloudflare.
+So let's say I bought xyz.com. I define a record — whenever a request comes in as api.xyz.com, proxy it to my DigitalOcean VM. And if the request comes in as xyz.com normally, point it to Cloudflare Pages.
+And Cloudflare gives two options for how it handles these records. Option one — Proxied. The request hits Cloudflare first, Cloudflare returns its own IP, the destination IP stays hidden. DDoS protection, rate limiting, all of that happens at Cloudflare's layer. This is what I use for my backend. Option two — DNS only. Cloudflare just resolves the domain to the destination, no special handling. For a static website, this is fine.
+Built it. Launched it. And then.. few days passed.. very less traffic. Almost nothing.
+I started researching SEO. And that's when I realized the problem.
+React is client-side rendering. When Google's crawler hits my website, it gets an empty HTML file. Because React loads everything dynamically in the browser after the page loads. The crawler sees nothing — so Google doesn't rank you.
+That day I understood three things properly for the first time — client-side rendering, server-side rendering, and static site generation.
+Client-side rendering — what React does by default. Empty HTML first, then everything loads dynamically. Bad for SEO.
+Server-side rendering — every request gets its content generated on the server before it's sent. So the first thing the browser and the crawler both receive is actual content.
+Static site generation — everything is pre-compiled at build time into HTML, CSS, JS. The most effective for SEO out of all three because there's no server involved at all — it's just files being served directly.
+Next.js supports both SSR and SSG. And the good part — Next.js works with React. I didn't have to throw away my components or my styling. I just had to handle routing through Next.js and configure a few things. Most of my work stayed exactly the same.
+After migrating — Google's bot finally crawled properly. Site ranked #1 within a few days. I also published articles on Medium, dev.to, Reddit — which built backlinks — basically the more sites that point to yours, the more Google treats your site as valued. But the Next.js migration was the core fix.
+
+Site is up, SEO is fixed, traffic is coming in. But now a new problem — my backend is running, my site is running, but if something goes wrong in production I have absolutely no visibility. No logs, no alerts, nothing. I'm flying blind. I need an observability platform.
+
+New Relic → Datadog
+I can't store logs in the VM itself — bad practice. Disk fills up, and if the VM goes down, logs are gone with it.
+I've worked with CloudWatch before — but I'm not on AWS, so that's out. ELK stack — I can't host it myself on a 2GB machine.
+So New Relic vs Datadog.
+The difference — Datadog is essentially infrastructure focused. New Relic is more specialized in logs and metrics. Based on just that, New Relic seemed like the clear choice.
+But — I always have scaling in my head. When I eventually move to Kubernetes, New Relic doesn't support Kubernetes out of the box. Datadog does.
+So one reason — future Kubernetes readiness. And a student offer got me 2 years of Datadog's metrics service included, so I'm basically just paying for logs.
+
+(pause, breath, look at the room)
+Every single one of these — there was an obvious default. The thing I would have gone with if I just trusted my gut or stuck with what I already knew. And every single time, a little extra research showed me there was a better path.
+
+SLIDE 4 — "Don't overengineer. But design so you can extend, not replace."
+I want to talk about something that I think a lot about.
+There's this advice everyone gives — "don't overengineer." And I agree with that. Don't add Kubernetes to a 10-user app just because it's trending. Don't use a message queue when a simple API call works fine. Don't add Docker when a plain VM is enough. I made those calls consciously.
+But there's a difference between not overengineering, and not thinking ahead.
+The Fastify example — I knew Fastify would have its limits at scale. I knew Java would eventually come in. But instead of saying "okay let me add a Java service now" — which would be overengineering — I just made sure my Fastify code was structured in a way that when that day comes, I can take pieces out and move them to Java. Without rewriting everything.
+That's what I mean by — design so you can extend, not replace.
+Because the biggest problem in migration is always — you built something tightly coupled, nothing is modular, and now when you want to change it, you have to start from scratch. And starting from scratch is expensive. In time, in money, in mental energy.
+So the idea is — yes, don't overengineer today. But think about what you want it to look like eventually, and structure your current setup so that future version is an extension of what you built, not a replacement.
+I think that's a more honest version of the advice. Not "don't think about scaling" — but "think about scaling, and then build the minimal thing that keeps that future possible."
+(pause)
+And honestly — this is not just about code. This is about every decision. The modular folder structure in Fastify, the way I set up Nginx to handle Blue/Green, the way I separated api.xyz.com from xyz.com on Cloudflare — every single one of those was me thinking about the future without acting on it prematurely.
+(click to next slide)
+
+
+SLIDE 5 — "What I'd Do Differently"
+Okay, the honest bit.
+The SEO mistake — I already talked about this. Built the whole frontend in vanilla React. Launched it. Sat there wondering why no one was finding it. Realized Google's crawler was getting empty HTML. Migrated to Next.js. Would 100% start with Next.js from day one if I did this again. This one hurt because it was a very avoidable mistake if I had just thought about SEO before building.
+
+(your second point — fill this in with something real. A suggestion below if nothing comes to mind immediately:)
+Not having observability early enough — For the first few weeks after launch, I was essentially flying blind. I had Datadog set up but I wasn't actually looking at it regularly. Something could be silently failing and I wouldn't know until a user told me. Now I actually check logs and alerts properly. Would set up proper alerting thresholds much earlier if I did it again.
+
+Still unsure about — Was Datadog overkill for my scale? Probably. At the number of users I have right now, it's like using a sledgehammer for a nail. But the peace of mind, knowing that if something breaks I can actually trace it — and knowing it's future-proof for Kubernetes — felt worth it. Ask me again in a year, maybe I'll have a different answer.
+
+And last thing. One thing I didn't put on the slides but I want to mention.
+AI for debugging — and why I changed how I use it.
+When I was starting out, whenever I hit an error — SSH connection failing, Nginx not starting, Cloudflare SSL cert not importing properly — my first instinct was to ask AI.
+And the problem was — AI gives you generic answers. It knows things at a high level. It's trained on documentation and tutorials. But it doesn't know the specific combination of your setup, your error, your environment.
+So I'd ask AI, get a generic answer, try it, it wouldn't work, ask AI again — going in circles.
+Then one day I just Googled the exact error. Went to a StackOverflow thread from 4 years ago. Some person had the exact same issue, tried 6 things that didn't work, and someone replied with a very specific workaround. That workaround solved my problem in 5 minutes.
+And that's when I realized — AI can never beat the actual experiments and workarounds that humans have gone through and documented. StackOverflow, GitHub issues, official docs — that's where the real solutions live.
+So now my workflow is — first, Google the error. Read StackOverflow, read GitHub issues, read official docs. Get the actual insight. Then go to AI and say "I found this approach, does it work with my current setup?" Use AI to apply the solution, not to find it.
+AI is great for a lot of things. But for debugging real production issues? Google it first.
+
+(pause, look at the room)
+So that's it. That's my journey from dev to prod as a solo developer with no one guiding me.
+I'm not standing here saying I did everything right. I made mistakes. I had to redo things. I Googled things that probably seemed obvious to everyone in this room.
+But every single one of those decisions — I made them consciously. I researched them. I had a reason.
+And if there's one thing I want anyone to take from this — it's that the extra 30 minutes of research before you commit to something is almost always worth it. The default is rarely the best option. And if you always keep the future in your head while building for today — you'll spend a lot less time replacing things later.
+(smile)
+Any questions?
